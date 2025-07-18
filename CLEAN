@@ -1,0 +1,29 @@
+//@version=6
+indicator("The Aarya Yadav Project", overlay = true)
+
+// ===== SECTION 1: ESSENTIAL INPUTS =====
+
+// === Core Settings ===
+modeInput       = input.string("Historical", "Mode", options = ["Historical", "Present"])
+showTrendInput  = input(false, "Color Candles")
+
+// === Structure Toggles ===
+showInternalsInput        = input(true, "Show Internal Structure")
+showStructureInput        = input(true, "Show Swing Structure")
+showSwingsInput           = input(false, "Show Swing Points")
+swingsLengthInput         = input.int(50, "Swing Length", minval = 10)
+showEqualHighsLowsInput   = input(true, "Equal High/Low")
+
+// === Order Blocks ===
+showInternalOrderBlocksInput = input(true, "Internal OBs")
+internalOrderBlocksSizeInput = input.int(5, "Internal OB Size", minval = 1, maxval = 20)
+
+showSwingOrderBlocksInput = input(false, "Swing OBs")
+swingOrderBlocksSizeInput = input.int(5, "Swing OB Size", minval = 1, maxval = 20)
+
+// === Fair Value Gaps ===
+showFairValueGapsInput = input(false, "Show FVG")
+
+// === Zones & Highs/Lows ===
+showHighLowSwingsInput        = input(true, "Show High/Low Swings")
+showPremiumDiscountZonesInput = input(false, "Show Premium/Discount Zones")
