@@ -1,0 +1,160 @@
+//@version=5
+indicator("Institutional Trading Brain (No Session Filter)", overlay=true, max_labels_count=200)
+
+// === PARAMETERS ===
+score_threshold = input.float(0.7, "Signal Score Threshold", step=0.01)
+risk_MAE_A = input.float(0.5, "MAE Threshold (Grade A)", step=0.01)
+risk_MAE_B = input.float(1.0, "MAE Threshold (Grade B)", step=0.01)
+session_NY = input.session("0930-1600", "NY Session (EST)")
+session_London = input.session("0300-1100", "London Session (UTC)")
+use_entropy_filter = input.bool(true, "Enable Entropy/Rarity Filter")
+show_json = input.bool(true, "Show JSON Output on Chart")
+
+// === CONTEXT LAYERS ===
+// Higher Timeframe Bias (HTF)
+htf_tf = input.timeframe("D", "HTF for Bias")
+htf_close = request.security(syminfo.tickerid, htf_tf, close)
+biasHTF = ta.ema(htf_close, 10) > ta.ema(htf_close, 20) ? 1 : -1
+
+// Local Structure Bias (LTF)
+biasLTF = ta.ema(close, 10) > ta.ema(close, 20) ? 1 : -1
+
+// Order Block (Simple Proxy)
+isBullOB = close[1] < open[1] and close > open and close > high[1] and open <= close[1]
+isBearOB = close[1] > open[1] and close < open and close < low[1] and open >= close[1]
+inOrderBlock = isBullOB or isBearOB
+
+// Fair Value Gap (FVG)
+fvgGap = math.abs(low - high[1]) > ta.stdev(close, 20) * 1.5
+inFVG = fvgGap
+
+// Liquidity Sweep
+eqh = ta.highest(high, 10)[1]
+eql = ta.lowest(low, 10)[1]
+sweptEQH = high > eqh
+sweptEQL = low < eql
+
+// MACD Histogram
+[macdLine, signalLine, macdHist] = ta.macd(close, 12, 26, 9)
+
+// === ADX CUSTOM ===
+adxLength = 14
+up = ta.change(high)
+down = -ta.change(low)
+plusDM = na(up) ? na : (up > down and up > 0 ? up : 0)
+minusDM = na(down) ? na : (down > up and down > 0 ? down : 0)
+trur = ta.rma(ta.tr(true), adxLength)
+plusDI = 100 * ta.rma(plusDM, adxLength) / trur
+minusDI = 100 * ta.rma(minusDM, adxLength) / trur
+adx = 100 * ta.rma(math.abs(plusDI - minusDI) / (plusDI + minusDI), adxLength)
+
+// Fib Confluence
+fibRetrace = ta.valuewhen(high == ta.highest(high, 20), high, 0) - ta.valuewhen(low == ta.lowest(low, 20), low, 0)
+fibLow = ta.valuewhen(low == ta.lowest(low, 20), low, 0)
+fib_050 = fibLow + fibRetrace * 0.5
+fib_0618 = fibLow + fibRetrace * 0.618
+fibConfluence = close >= fib_050 and close <= fib_0618
+
+// Volatility: Normalized ATR
+atr = ta.atr(14)
+tanh(x) =>
+    e2x = math.exp(2 * x)
+    (e2x - 1) / (e2x + 1)
+volatilityScore = tanh(atr / close * 100)
+
+// === REGIME CLASSIFICATION ===
+bb_middle = ta.sma(close, 20)
+bb_dev = 2 * ta.stdev(close, 20)
+bb_upper = bb_middle + bb_dev
+bb_lower = bb_middle - bb_dev
+bb_width = (bb_upper - bb_lower) / bb_middle
+expansion = atr > ta.sma(atr, 50) and bb_width > ta.sma(bb_width, 50)
+compression = atr < ta.sma(atr, 50) and bb_width < ta.sma(bb_width, 50)
+regime = expansion ? "Expansion" : compression ? "Compression" : "Mean-Reversion"
+
+// === TIME FILTER ===
+// Always true for all bars (NO SESSION FILTER)
+inSession = true
+timeScore = inSession ? 1 : 0
+
+// === ENTROPY FILTER ===
+var float signalFrequency = na
+var int totalBars = 0
+var int signalBars = 0
+totalBars := totalBars + 1
+candidateSignal = (macdHist > 0 and adx > 25 and biasHTF == 1 and biasLTF == 1 and inSession)
+if candidateSignal
+    signalBars := signalBars + 1
+signalFrequency := signalBars / totalBars
+entropyScore = use_entropy_filter ? math.log(1 / (signalFrequency + 1e-6)) : 0
+
+// === RISK GRADING ===
+MAE = ta.highest(close - low, 10)
+riskGrade = MAE < risk_MAE_A ? "A" : MAE < risk_MAE_B ? "B" : "C"
+
+// === SCORING ENGINE ===
+wBiasHTF = 0.15
+wBiasLTF = 0.10
+wOB = 0.10
+wFVG = 0.10
+wMACD = 0.15
+wADX = 0.10
+wFib = 0.05
+wVol = 0.10
+wEntropy = 0.10
+wTime = 0.05
+
+featureScore =
+     wBiasHTF * (biasHTF == 1 ? 1 : 0)
+   + wBiasLTF * (biasLTF == 1 ? 1 : 0)
+   + wOB * (inOrderBlock ? 1 : 0)
+   + wFVG * (inFVG ? 1 : 0)
+   + wMACD * (macdHist > 0 ? 1 : 0)
+   + wADX * (adx > 25 ? 1 : 0)
+   + wFib * (fibConfluence ? 1 : 0)
+   + wVol * volatilityScore
+   + wEntropy * tanh(entropyScore)
+   + wTime * timeScore
+
+// === BAYESIAN BOOST ===
+if biasHTF == 1 and biasLTF == 1 and inFVG and macdHist > 0
+    featureScore += 0.1
+
+// === SIGNALS ===
+longSignal = featureScore > score_threshold and biasHTF == 1 and biasLTF == 1 and macdHist > 0 and adx > 25 and inSession
+shortSignal = featureScore > score_threshold and biasHTF == -1 and biasLTF == -1 and macdHist < 0 and adx > 25 and inSession
+
+// === ALERT JSON ===
+var table t = table.new(position.top_right, 1, 1)
+if show_json and (longSignal or shortSignal)
+    sigType = longSignal ? "Long" : "Short"
+    sigConfluence = array.new_string()
+    if inFVG
+        array.push(sigConfluence, "FVG")
+    if inOrderBlock
+        array.push(sigConfluence, "OB")
+    if macdHist > 0
+        array.push(sigConfluence, "MACD Confirm")
+    if adx > 25
+        array.push(sigConfluence, "ADX Confirm")
+    if fibConfluence
+        array.push(sigConfluence, "Fib Confluence")
+    cflist = array.join(sigConfluence, ", ")
+    json_str = '{\n' +
+      '  "signal": "' + sigType + '",\n' +
+      '  "score": ' + str.tostring(featureScore, "#.##") + ',\n' +
+      '  "regime": "' + regime + '",\n' +
+      '  "risk": "' + riskGrade + '",\n' +
+      '  "confluence": ["' + cflist + '"]\n' +
+      '}'
+    table.cell(t, 0, 0, json_str, text_size=size.small, text_color=color.white, bgcolor=color.new(color.black, 80))
+
+// === CHART OUTPUT ===
+plotshape(longSignal, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.tiny, title="Long Signal")
+plotshape(shortSignal, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.tiny, title="Short Signal")
+bgcolor(longSignal ? color.new(color.green, 90) : na)
+bgcolor(shortSignal ? color.new(color.red, 90) : na)
+
+// === ALERTS ===
+alertcondition(longSignal, title="Long Signal", message="Institutional Trading Brain: Long Signal")
+alertcondition(shortSignal, title="Short Signal", message="Institutional Trading Brain: Short Signal")
